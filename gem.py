@@ -9,19 +9,19 @@ TELEGRAM_TOKEN = "8767299908:AAE9jRtD2Buo2OiT0HL-QLsPrdD88FvHQ38"
 GEMINI_API_KEY = "AIzaSyAySWwDp2fRPFEbMF1m3OOA15H7O2VnVR0"
 
 def ask_gemini(text_query=None, image_bytes=None):
-    """Финальная версия запроса к Gemini v1"""
-    # Используем стабильную версию v1 и прямой путь к модели
+    """Версия с жестко прописанным путем v1 для стабильности"""
+    # Используем v1 — это самая стабильная точка входа сейчас
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     system_instruction = (
         "Ты — эксперт Avito. Определи точную модель товара и его цену на б/у рынке РФ. "
-        "Ответ дай СТРОГО в формате JSON без кавычек markdown. "
+        "Ответ дай СТРОГО в формате JSON. "
         "Формат: {\"name\": \"название\", \"description\": \"хар-ки\", \"avg_price\": \"цена руб\", \"advice\": \"совет\"}"
     )
 
     parts = [{"text": system_instruction}]
     if text_query:
-        parts.append({"text": f"Запрос: {text_query}"})
+        parts.append({"text": f"Объект для оценки: {text_query}"})
     if image_bytes:
         parts.append({
             "inline_data": {
@@ -37,10 +37,10 @@ def ask_gemini(text_query=None, image_bytes=None):
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         res_data = response.json()
         
-        # Если Google ругается на модель, пробуем v1beta (запасной вариант)
-        if 'error' in res_data and 'not found' in res_data['error']['message'].lower():
-            url_beta = url.replace('/v1/', '/v1beta/')
-            response = requests.post(url_beta, json=payload, headers=headers, timeout=30)
+        # Если всё равно ошибка 'not found', пробуем экстренный метод (v1beta с другим префиксом)
+        if 'error' in res_data and res_data['error'].get('code') == 404:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
             res_data = response.json()
 
         if 'error' in res_data:
@@ -48,15 +48,17 @@ def ask_gemini(text_query=None, image_bytes=None):
             
         raw_text = res_data['candidates'][0]['content']['parts'][0]['text']
         
-        # Парсим JSON
+        # Поиск JSON в ответе
         match = re.search(r'\{.*\}', raw_text, re.DOTALL)
         if match:
-            return json.loads(match.group().replace('\n', ' ').replace('\r', ''))
+            # Чистим от переносов, которые ломают парсинг
+            clean_json = match.group().replace('\n', ' ').replace('\r', ' ')
+            return json.loads(clean_json)
         
-        return {"error_mode": True, "message": "Ошибка формата ответа нейросети."}
+        return {"error_mode": True, "message": "Нейросеть ответила в неверном формате."}
         
     except Exception as e:
-        return {"error_mode": True, "message": f"Ошибка соединения: {str(e)}"}
+        return {"error_mode": True, "message": f"Ошибка системы: {str(e)}"}
 
 def send_tg(chat_id, text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -64,7 +66,7 @@ def send_tg(chat_id, text):
 
 def main():
     last_id = 0
-    print("🚀 SmartSell Pro готов к тесту!")
+    print("🚀 SmartSell Pro запущен на стабильной версии v1")
     
     while True:
         try:
@@ -78,16 +80,16 @@ def main():
                 chat_id = msg['chat']['id']
 
                 if msg.get('photo'):
-                    send_tg(chat_id, "📸 Изучаю фото...")
+                    send_tg(chat_id, "📸 Изучаю фото товара...")
                     file_id = msg['photo'][-1]['file_id']
                     f_info = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}").json()
                     img_data = requests.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{f_info['result']['file_path']}").content
                     data = ask_gemini(text_query=msg.get('caption'), image_bytes=img_data)
                 elif msg.get('text'):
                     if msg['text'] == '/start':
-                        send_tg(chat_id, "Привет! Пришли фото или название товара.")
+                        send_tg(chat_id, "Привет! Пришли фото или название товара, я оценю его.")
                         continue
-                    send_tg(chat_id, "🔍 Оцениваю стоимость...")
+                    send_tg(chat_id, "🔍 Считаю среднюю цену...")
                     data = ask_gemini(text_query=msg['text'])
 
                 if data:
@@ -102,7 +104,7 @@ def main():
                         )
                         send_tg(chat_id, res_msg)
         except Exception as e:
-            print(f"Loop error: {e}")
+            print(f"Ошибка: {e}")
             time.sleep(3)
 
 if __name__ == "__main__":
